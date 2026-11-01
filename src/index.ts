@@ -1,2 +1,26 @@
-   const message: string = "Action Gateway is alive";
-   console.log(message);
+import { McpServer } from '@modelcontextprotocol/server';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import * as z from 'zod/v4';
+
+function createServer(): McpServer {
+  const server = new McpServer({ name: 'agent-action-gateway', version: '0.1.0' });
+
+  server.registerTool(
+    'ping',
+    {
+      description: 'Health check. Returns "pong", optionally echoing a short message.',
+      inputSchema: z.object({
+        message: z.string().max(200).optional().describe('Optional text to echo back'),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ message }) => ({
+      content: [{ type: 'text', text: message ? `pong: ${message}` : 'pong' }],
+    }),
+  );
+
+  return server;
+}
+
+void serveStdio(createServer);
+console.error('agent-action-gateway MCP server running on stdio');
