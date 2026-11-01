@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod/v4';
+import { config } from './config.js';
 
 function createServer(): McpServer {
   const server = new McpServer({ name: 'agent-action-gateway', version: '0.1.0' });
@@ -24,3 +25,4 @@ function createServer(): McpServer {
 
 void serveStdio(createServer);
 console.error('agent-action-gateway MCP server running on stdio');
+console.error(`WooCommerce store: ${config.WOO_BASE_URL}`);
