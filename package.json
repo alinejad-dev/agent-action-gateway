@@ -1,0 +1,13 @@
+{
+  "name": "agent-action-gateway",
+  "version": "0.1.0",
+  "description": "MCP server that lets AI agents take real business actions safely",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {},
+  "author": "Ali Nejad",
+  "license": "MIT"
+}

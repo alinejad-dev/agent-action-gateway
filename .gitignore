@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Logs & test coverage
+*.log
+coverage/
