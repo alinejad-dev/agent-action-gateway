@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod/v4';
 import { config } from './config.js';
+import { registerGetOrderTool } from './tools/getOrder.js';
 
 function createServer(): McpServer {
   const server = new McpServer({ name: 'agent-action-gateway', version: '0.1.0' });
@@ -19,6 +20,8 @@ function createServer(): McpServer {
       content: [{ type: 'text', text: message ? `pong: ${message}` : 'pong' }],
     }),
   );
+
+  registerGetOrderTool(server);
 
   return server;
 }
