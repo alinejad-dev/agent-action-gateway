@@ -49,6 +49,12 @@ const httpServer = createHttpServer((req, res) => {
 
   // 4) Bearer token (constant-time compare).
   if (!isAuthorized(req)) {
+    // Log failed attempts for auditing. Never log the header value itself.
+    const auth = req.headers.authorization;
+    const authInfo = typeof auth === 'string' ? `present, ${auth.length} chars` : 'missing';
+    console.error(
+      `[auth] 401 ${req.method} ${path} from ${req.socket.remoteAddress ?? 'unknown'} (Authorization header: ${authInfo})`,
+    );
     sendJson(res, 401, { error: 'unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
     return;
   }
