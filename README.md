@@ -1,5 +1,7 @@
 # Agent Action Gateway
 
+[![CI](https://github.com/alinejad-dev/agent-action-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/alinejad-dev/agent-action-gateway/actions/workflows/ci.yml)
+
 An MCP server that sits between AI agents and business systems, and enforces safety **in code, not in the prompt**.
 
 AI agents are good at deciding *what* to do. They should not be the last line of defence for *whether* an action is allowed. This gateway gives agents (Claude Code, Claude Desktop, n8n) a small set of well-defined tools, and puts validation, authentication and data minimisation in front of the real system: currently a WooCommerce store.
@@ -122,7 +124,7 @@ claude mcp add action-gateway -- node /absolute/path/to/agent-action-gateway/dis
 
 ## Tests
 
-Unit tests (Vitest) cover the security-critical pure logic:
+Unit tests (Vitest) cover the security-critical pure logic, and run on every push via GitHub Actions:
 
 - **Bearer auth:** correct token, missing header, wrong token of the same length, prefix of the real token, extra characters, wrong scheme, empty token
 - **Output envelope:** success and failure shapes; store and internal errors never leak details to the model
@@ -142,6 +144,7 @@ src/
   tools/              MCP tools + output envelope
   woo/                WooCommerce client, OAuth signing, error types
 test/                 Vitest unit tests
+.github/workflows/    CI: typecheck, tests and build on every push
 ```
 
 ## Roadmap
