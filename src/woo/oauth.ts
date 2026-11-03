@@ -9,16 +9,31 @@ function percentEncode(value: string): string {
   );
 }
 
+/** Lets tests pin the random parts so the signature is predictable. Production code omits it. */
+export type SignOptions = {
+  nonce?: string;
+  timestamp?: number;
+};
+
 /**
  * Returns a copy of `url` with OAuth 1.0a "one-legged" params added.
  * Used for WooCommerce over plain HTTP. The secret signs the request — it is never sent.
  */
-export function signOAuth1(method: string, url: URL, consumerKey: string, consumerSecret: string): URL {
+export function signOAuth1(
+  method: string,
+  url: URL,
+  consumerKey: string,
+  consumerSecret: string,
+  options: SignOptions = {},
+): URL {
   const signed = new URL(url);
   signed.searchParams.set('oauth_consumer_key', consumerKey);
-  signed.searchParams.set('oauth_nonce', randomBytes(16).toString('hex'));
+  signed.searchParams.set('oauth_nonce', options.nonce ?? randomBytes(16).toString('hex'));
   signed.searchParams.set('oauth_signature_method', 'HMAC-SHA256');
-  signed.searchParams.set('oauth_timestamp', Math.floor(Date.now() / 1000).toString());
+  signed.searchParams.set(
+    'oauth_timestamp',
+    String(options.timestamp ?? Math.floor(Date.now() / 1000)),
+  );
 
   // 1) Encode every key and value, sort by key, join as key=value&key=value
   const paramString = [...signed.searchParams.entries()]
