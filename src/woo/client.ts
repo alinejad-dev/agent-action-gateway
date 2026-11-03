@@ -1,22 +1,11 @@
 import { config } from '../config.js';
+import { WooError } from './errors.js';
 import { signOAuth1 } from './oauth.js';
 
+// Re-exported so existing imports from './client.js' keep working.
+export { WooError, type WooErrorKind } from './errors.js';
+
 const TIMEOUT_MS = 10_000;
-
-export type WooErrorKind = 'NOT_FOUND' | 'AUTH' | 'UNAVAILABLE' | 'BAD_RESPONSE';
-
-/** The only error type this client throws. Messages never contain secrets. */
-export class WooError extends Error {
-  readonly kind: WooErrorKind;
-  readonly status: number | undefined;
-
-  constructor(kind: WooErrorKind, message: string, status?: number) {
-    super(message);
-    this.name = 'WooError';
-    this.kind = kind;
-    this.status = status;
-  }
-}
 
 /**
  * GET a WooCommerce REST v3 endpoint, e.g. wooGet('/orders/20').

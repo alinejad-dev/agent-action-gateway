@@ -1,4 +1,4 @@
-import { WooError } from '../woo/client.js';
+import { WooError } from '../woo/errors.js';
 
 export type ErrorCode = 'INVALID_INPUT' | 'ORDER_NOT_FOUND' | 'STORE_UNAVAILABLE' | 'INTERNAL_ERROR';
 
