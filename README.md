@@ -6,7 +6,7 @@ An MCP server that sits between AI agents and business systems, and enforces saf
 
 AI agents are good at deciding *what* to do. They should not be the last line of defence for *whether* an action is allowed. This gateway gives agents (Claude Code, Claude Desktop, n8n) a small set of well-defined tools, and puts validation, authentication and data minimisation in front of the real system: currently a WooCommerce store.
 
-> **Status: Phase 1 (read-only).** The gateway exposes read tools today. Write actions (refunds, cancellations) with a policy engine, live-state checks, idempotency, human approval and an audit log are planned. See [Roadmap](#roadmap).
+> **Status: Phase 1 complete (read-only tools). Phase 2 (safe write actions) is in progress.** Write actions (refunds, cancellations) with a policy engine, live-state checks, idempotency, human approval and an audit log are being built. See [Roadmap](#roadmap).
 
 ## What it does today
 
@@ -149,9 +149,10 @@ test/                 Vitest unit tests
 
 ## Roadmap
 
-- **Phase 2: Safe actions.** `request_refund` and `cancel_order` behind a policy engine (rules in config, e.g. auto-approve small refunds, block outside the return window), live re-fetch of the order before acting, idempotency keys, and an audit log in Postgres.
+- **Phase 2: Safe actions** *(in progress)*. `request_refund` and `cancel_order` behind a policy engine (rules in config, e.g. auto-approve small refunds, block outside the return window), live re-fetch of the order before acting, idempotency keys, and an audit log in Postgres. Store access goes through a platform-agnostic `StoreAdapter` interface, so actions are not tied to WooCommerce.
+- **Phase 2.5: Shopify adapter.** The same `StoreAdapter` implemented for Shopify (GraphQL Admin API), starting with `get_order` and `request_refund`. The policy engine and safety checks stay unchanged across both stores.
 - **Phase 3: Human in the loop.** Slack approval for sensitive actions, an approval-status tool, and attack tests (double-refund race, prompt injection in customer text).
-- **Phase 4: Ship.** Demo video, extended docs, then a Shopify adapter behind the same interface.
+- **Phase 4: Ship.** Demo video and extended docs.
 
 ## Notes
 
