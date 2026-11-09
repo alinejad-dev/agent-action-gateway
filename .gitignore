@@ -9,6 +9,9 @@ dist/
 .env.*
 !.env.example
 
+# Local certificates (each user downloads their own)
+certs/
+
 # Logs & test coverage
 *.log
 coverage/
