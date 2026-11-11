@@ -15,7 +15,9 @@
     "start:http": "node dist/http.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "smoke": "tsc && npx @modelcontextprotocol/inspector --cli node dist/index.js --method tools/list"
+    "smoke": "tsc && npx @modelcontextprotocol/inspector --cli node dist/index.js --method tools/list",
+    "migrate:status": "tsx src/scripts/migrate.ts status",
+    "migrate:apply": "tsx src/scripts/migrate.ts apply"
   },
   "author": "Ali Nejad",
   "license": "MIT",
