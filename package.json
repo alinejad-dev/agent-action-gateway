@@ -19,7 +19,8 @@
     "migrate:status": "tsx src/scripts/migrate.ts status",
     "migrate:apply": "tsx src/scripts/migrate.ts apply",
     "app-password:status": "tsx src/scripts/set-app-password.ts status",
-    "app-password:rotate": "tsx src/scripts/set-app-password.ts rotate"
+    "app-password:rotate": "tsx src/scripts/set-app-password.ts rotate",
+    "db:selftest": "tsx src/scripts/selftest-db.ts"
   },
   "author": "Ali Nejad",
   "license": "MIT",
