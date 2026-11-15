@@ -22,7 +22,8 @@
     "app-password:rotate": "tsx src/scripts/set-app-password.ts rotate",
     "db:selftest": "tsx src/scripts/selftest-db.ts",
     "woo-write-key:status": "tsx src/scripts/set-woo-write-key.ts status",
-    "woo-write-key:set": "tsx src/scripts/set-woo-write-key.ts set"
+    "woo-write-key:set": "tsx src/scripts/set-woo-write-key.ts set",
+    "woo:selftest": "tsx src/scripts/selftest-woo.ts"
   },
   "author": "Ali Nejad",
   "license": "MIT",
