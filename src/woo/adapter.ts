@@ -6,6 +6,8 @@ import type {
   ActionRejection,
   CancelRequest,
   CancelResult,
+  FindRefundRequest,
+  FindRefundResult,
   OrderSnapshot,
   OrderStatus,
   RefundRequest,
@@ -51,6 +53,16 @@ type WooSnapshotData = z.infer<typeof WooSnapshotSchema>;
 
 const WooRefundSchema = z.object({ id: z.number().int().positive(), amount: z.string() });
 const WooCancelSchema = z.object({ id: z.number().int(), status: z.string() });
+const WooRefundListSchema = z.array(
+  z.object({
+    id: z.number().int().positive(),
+    amount: z.string(),
+    meta_data: z.array(z.object({ key: z.string(), value: z.unknown() })),
+  }),
+);
+
+// Refunds read in one request. WooCommerce allows at most 100 (101 -> 400 rest_invalid_param).
+const REFUND_PAGE_SIZE = 100;
 
 // A Map, not an object: a status like "constructor" must not find Object.prototype members.
 const STATUS: ReadonlyMap<string, OrderStatus> = new Map([
@@ -79,6 +91,7 @@ const CANCEL_REJECTIONS: ReadonlyMap<string, ActionRejection> = new Map([
 ]);
 
 const UNKNOWN = { outcome: 'unknown' } as const;
+const ABSENT = { outcome: 'absent' } as const;
 
 export function createWooAdapter(options: WooAdapterOptions): StoreAdapter {
   if (!META_KEY.test(options.deliveredMetaKey)) {
@@ -90,7 +103,7 @@ export function createWooAdapter(options: WooAdapterOptions): StoreAdapter {
   }
   const { baseUrl, readKeys, writeKeys, deliveredMetaKey, fetchImpl } = options;
 
-  return {
+  const adapter: StoreAdapter = {
     platform: 'woocommerce',
 
     async getOrder(orderId: string): Promise<OrderSnapshot> {
@@ -176,7 +189,57 @@ export function createWooAdapter(options: WooAdapterOptions): StoreAdapter {
       );
       return readCancelAnswer(answer, orderId);
     },
+
+    // Read only, with the read key. See the warning about 'absent' in src/store/adapter.ts.
+    async findRefund({ orderId, requestId }: FindRefundRequest): Promise<FindRefundResult> {
+      assertRequestId(requestId);
+      if (!ORDER_ID.test(orderId)) {
+        return ABSENT; // createRefund never sends a request for such an id, so no refund can exist
+      }
+      const answer = await storeRequest(
+        {
+          baseUrl,
+          keys: readKeys,
+          method: 'GET',
+          path: `/orders/${orderId}/refunds`,
+          query: { per_page: String(REFUND_PAGE_SIZE) },
+        },
+        fetchImpl,
+      );
+      if (answer === null || answer.status !== 200) {
+        return UNKNOWN; // includes 404 rest_no_route (a disabled plugin or a wrong address)
+      }
+      const parsed = WooRefundListSchema.safeParse(answer.data);
+      if (!parsed.success || parsed.data.length >= REFUND_PAGE_SIZE) {
+        return UNKNOWN; // a full page may have more refunds after it: we have not seen them all
+      }
+      // Matched only by our meta, never by the reason text (anyone can type a reason in the admin).
+      const matches = parsed.data.filter((refund) =>
+        refund.meta_data.some((meta) => meta.key === REQUEST_ID_META_KEY && meta.value === requestId),
+      );
+      if (matches.length > 1) {
+        return { outcome: 'duplicate', storeRefundIds: matches.map((refund) => String(refund.id)) };
+      }
+      const match = matches[0];
+      if (match !== undefined) {
+        const cents = parseMoneyToCents(match.amount);
+        return cents === null || cents < 0
+          ? UNKNOWN
+          : { outcome: 'found', storeRefundId: String(match.id), amountCents: cents };
+      }
+      // Measured on WooCommerce 11.1.2: the list is also empty for a missing order and, without
+      // HPOS, for a trashed order whose refunds went to the trash with it. So an empty list alone
+      // proves nothing: 'absent' only when the order itself is still there.
+      // Not covered: an order restored from the trash between these two reads.
+      try {
+        await adapter.getOrder(orderId);
+      } catch {
+        return UNKNOWN; // missing, trashed, unreadable or no answer
+      }
+      return ABSENT;
+    },
   };
+  return adapter;
 }
 
 function assertRequestId(requestId: string): void {

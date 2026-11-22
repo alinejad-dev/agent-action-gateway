@@ -346,6 +346,204 @@ describe('WooCommerce adapter: cancelOrder', () => {
   });
 });
 
+describe('WooCommerce adapter: findRefund', () => {
+  const find = { orderId: '20', requestId: REQUEST_ID };
+  const OTHER_ID = '9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+
+  // Shape of GET /orders/<id>/refunds recorded from WooCommerce 11.1.2 (fields shortened).
+  // requestId null = a refund without our meta (made by someone else, e.g. in the admin).
+  function wooRefund(id: number, amount: string, requestId: unknown = REQUEST_ID): Record<string, unknown> {
+    const meta: Record<string, unknown>[] = [{ id: id * 10, key: '_refund_type', value: 'partial' }];
+    if (requestId !== null) {
+      meta.push({ id: id * 10 + 1, key: 'gateway_request_id', value: requestId });
+    }
+    return { id, amount, reason: `Action Gateway request ${REQUEST_ID}`, refunded_payment: false, meta_data: meta };
+  }
+
+  // One answer per request, in order: first the refund list, then (only if needed) the order.
+  function adapterAnsweringInOrder(answers: Answer[], overrides: Partial<WooAdapterOptions> = {}) {
+    const urls: URL[] = [];
+    const methods: (string | undefined)[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      urls.push(url);
+      methods.push(init.method);
+      const answer = answers[urls.length - 1];
+      if (answer === undefined) {
+        throw new Error('test: more requests than expected');
+      }
+      if (answer === 'network-error') {
+        throw new TypeError('fetch failed');
+      }
+      return new Response(JSON.stringify(answer.body), { status: answer.status });
+    };
+    const { adapter } = adapterAnswering({ status: 200, body: {} }, { fetchImpl, ...overrides });
+    return { adapter, urls, methods };
+  }
+
+  it('finds our refund with one GET and the read-only key, among refunds made by others', async () => {
+    const list = [wooRefund(31, '5.00', null), wooRefund(30, '18.00')];
+    const { adapter, urls, methods } = adapterAnsweringInOrder([{ status: 200, body: list }]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'found', storeRefundId: '30', amountCents: 1800 });
+    expect(urls).toHaveLength(1);
+    expect(methods).toEqual(['GET']);
+    expect(urls[0]?.pathname).toBe('/wp-json/wc/v3/orders/20/refunds');
+    expect(urls[0]?.searchParams.get('per_page')).toBe('100');
+    expect(urls[0]?.searchParams.get('oauth_consumer_key')).toBe(READ_KEYS.key);
+  });
+
+  it('works without a write key (reading only)', async () => {
+    const { adapter } = adapterAnsweringInOrder([{ status: 200, body: [wooRefund(30, '18.00')] }], {
+      writeKeys: null,
+    });
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'found', storeRefundId: '30', amountCents: 1800 });
+  });
+
+  it('counts a refund that carries our meta twice as one refund', async () => {
+    const refund = wooRefund(30, '18.00');
+    const meta = refund.meta_data as Record<string, unknown>[];
+    refund.meta_data = [...meta, { id: 999, key: 'gateway_request_id', value: REQUEST_ID }];
+    const { adapter } = adapterAnsweringInOrder([{ status: 200, body: [refund] }]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'found', storeRefundId: '30', amountCents: 1800 });
+  });
+
+  it('reports more than one refund with our request id as duplicate, never picking one', async () => {
+    const list = [wooRefund(32, '18.00'), wooRefund(31, '1.00', OTHER_ID), wooRefund(30, '18.00')];
+    const { adapter } = adapterAnsweringInOrder([{ status: 200, body: list }]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'duplicate', storeRefundIds: ['32', '30'] });
+  });
+
+  it('returns absent when no refund carries our request id and the order is still there', async () => {
+    const list = [wooRefund(31, '1.00', OTHER_ID), wooRefund(30, '5.00', null)];
+    const { adapter, urls } = adapterAnsweringInOrder([
+      { status: 200, body: list },
+      { status: 200, body: wooOrder() },
+    ]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'absent' });
+    expect(urls).toHaveLength(2);
+    expect(urls[1]?.pathname).toBe('/wp-json/wc/v3/orders/20');
+    expect(urls[1]?.searchParams.get('oauth_consumer_key')).toBe(READ_KEYS.key);
+  });
+
+  it('returns absent for an order without refunds that is still there', async () => {
+    const { adapter } = adapterAnsweringInOrder([
+      { status: 200, body: [] },
+      { status: 200, body: wooOrder() },
+    ]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'absent' });
+  });
+
+  it.each([
+    ['our id in upper case', REQUEST_ID.toUpperCase()],
+    ['our id with a space', ` ${REQUEST_ID}`],
+    ['our id inside an object', { id: REQUEST_ID }],
+    ['our id inside a list', [REQUEST_ID]],
+  ])('does not match %s', async (_label, value) => {
+    const { adapter } = adapterAnsweringInOrder([
+      { status: 200, body: [wooRefund(30, '18.00', value)] },
+      { status: 200, body: wooOrder() },
+    ]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'absent' });
+  });
+
+  it('does not match our request id stored under another meta key', async () => {
+    const refund = wooRefund(30, '18.00', null);
+    refund.meta_data = [{ id: 300, key: 'note', value: REQUEST_ID }];
+    const { adapter } = adapterAnsweringInOrder([
+      { status: 200, body: [refund] },
+      { status: 200, body: wooOrder() },
+    ]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'absent' });
+  });
+
+  it('does not match by the reason text, only by the meta', async () => {
+    // wooRefund always has our request id in the reason; here the meta is missing.
+    const { adapter } = adapterAnsweringInOrder([
+      { status: 200, body: [wooRefund(30, '18.00', null)] },
+      { status: 200, body: wooOrder() },
+    ]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'absent' });
+  });
+
+  // Measured: the list is empty for a missing order and, without HPOS, for a trashed one
+  // (its refunds go to the trash with it). An empty list alone proves nothing.
+  it.each([
+    ['the order is missing (404)', { status: 404, body: { code: 'woocommerce_rest_shop_order_invalid_id' } }],
+    ['the order is in the trash', { status: 200, body: wooOrder({ status: 'trash' }) }],
+    ['the order read fails (500)', { status: 500, body: { code: 'internal_server_error' } }],
+    ['the order read has no answer', 'network-error'],
+    ['the order is unreadable', { status: 200, body: wooOrder({ total: 'abc' }) }],
+    ['the answer is another order', { status: 200, body: wooOrder({ id: 21 }) }],
+  ] as [string, Answer][])('returns unknown for an empty list when %s', async (_label, orderAnswer) => {
+    const { adapter } = adapterAnsweringInOrder([{ status: 200, body: [] }, orderAnswer]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'unknown' });
+  });
+
+  it('returns unknown for a full page of 100 refunds without our id (more may follow)', async () => {
+    const list = Array.from({ length: 100 }, (_, i) => wooRefund(i + 1, '1.00', OTHER_ID));
+    const { adapter, urls } = adapterAnsweringInOrder([{ status: 200, body: list }]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'unknown' });
+    expect(urls).toHaveLength(1);
+  });
+
+  it('reads a page of 99 refunds to the end', async () => {
+    const list = Array.from({ length: 99 }, (_, i) => wooRefund(i + 1, '1.00', OTHER_ID));
+    const { adapter } = adapterAnsweringInOrder([
+      { status: 200, body: list },
+      { status: 200, body: wooOrder() },
+    ]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'absent' });
+  });
+
+  it.each([
+    ['an unreadable amount', '1,50'],
+    ['a negative amount', '-5.00'],
+    ['an empty amount', ''],
+  ])('returns unknown when our refund has %s', async (_label, amount) => {
+    const { adapter } = adapterAnsweringInOrder([{ status: 200, body: [wooRefund(30, amount)] }]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'unknown' });
+  });
+
+  it.each([
+    ['404 rest_no_route (plugin disabled or wrong address)', { status: 404, body: { code: 'rest_no_route' } }],
+    ['401 (wrong key)', { status: 401, body: { code: 'woocommerce_rest_authentication_error' } }],
+    ['400 rest_invalid_param', { status: 400, body: { code: 'rest_invalid_param' } }],
+    ['a PHP fatal error', { status: 500, body: { code: 'internal_server_error' } }],
+    ['a redirect', { status: 301, body: null }],
+    ['a 2xx other than 200, even with a list', { status: 206, body: [wooRefund(30, '18.00')] }],
+    ['a 200 that is not a list', { status: 200, body: { id: 30 } }],
+    ['a 200 with text', { status: 200, body: 'ok' }],
+    ['a refund without an id', { status: 200, body: [{ amount: '18.00', meta_data: [] }] }],
+    ['a refund without meta_data', { status: 200, body: [{ id: 30, amount: '18.00' }] }],
+  ] as [string, Answer][])('returns unknown without reading the order for %s', async (_label, answer) => {
+    const { adapter, urls } = adapterAnsweringInOrder([answer]);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'unknown' });
+    expect(urls).toHaveLength(1);
+  });
+
+  it('returns unknown when no answer arrives', async () => {
+    const { adapter } = adapterAnsweringInOrder(['network-error']);
+    expect(await adapter.findRefund(find)).toEqual({ outcome: 'unknown' });
+  });
+
+  it.each(['abc', '0', '20/refunds', ''])(
+    'returns absent for the order id %j without asking the store (createRefund never sends one)',
+    async (orderId) => {
+      const { adapter, urls } = adapterAnsweringInOrder([]);
+      expect(await adapter.findRefund({ ...find, orderId })).toEqual({ outcome: 'absent' });
+      expect(urls).toHaveLength(0);
+    },
+  );
+
+  it.each(['', 'not-a-uuid', REQUEST_ID.toUpperCase()])(
+    'throws for the request id %j before sending anything',
+    async (requestId) => {
+      const { adapter, urls } = adapterAnsweringInOrder([]);
+      await expect(adapter.findRefund({ ...find, requestId })).rejects.toThrow('request id');
+      expect(urls).toHaveLength(0);
+    },
+  );
+});
+
 describe('readCalendarDate', () => {
   const meta = (...entries: [string, unknown][]) => entries.map(([key, value]) => ({ key, value }));
 

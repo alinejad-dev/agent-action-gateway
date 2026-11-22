@@ -57,6 +57,20 @@ export type CancelResult =
   // The order may or may not have changed. Never retry blindly: read the order again instead.
   | { outcome: 'unknown' };
 
+export type FindRefundRequest = {
+  orderId: string;
+  requestId: string; // action_requests.id (UUID) that createRefund stored on the refund
+};
+
+export type FindRefundResult =
+  | { outcome: 'found'; storeRefundId: string; amountCents: number }
+  // Certainly no refund with this request id on an order that still exists.
+  | { outcome: 'absent' }
+  // More than one refund carries this request id: an alarm for a person, never pick one silently.
+  | { outcome: 'duplicate'; storeRefundIds: string[] }
+  // Not certain (no complete answer, or the order is missing or in the trash). Keep the order locked.
+  | { outcome: 'unknown' };
+
 export interface StoreAdapter {
   readonly platform: 'woocommerce';
   /** Reads one order fresh from the store (never from a cache). */
@@ -68,4 +82,12 @@ export interface StoreAdapter {
    * It does not check the current status: which statuses may be cancelled is the policy's decision.
    */
   cancelOrder(request: CancelRequest): Promise<CancelResult>;
+  /**
+   * Looks for the refund that createRefund stored with this request id (for an 'unknown' outcome).
+   * WARNING: 'absent' is only trustworthy once the original request can no longer be in flight.
+   * A refund that is still being processed appears seconds later; calling it failed too early and
+   * sending a new request would refund twice. Reconciliation waits a safe delay first.
+   * A cancel is reconciled with getOrder (the status), not with this method.
+   */
+  findRefund(request: FindRefundRequest): Promise<FindRefundResult>;
 }
