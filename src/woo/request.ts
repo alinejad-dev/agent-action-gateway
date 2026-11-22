@@ -1,6 +1,7 @@
 // One function for every request to the WooCommerce REST API, reads and writes.
 // It does NOT import config.ts: the store address and the key pair are arguments,
 // so every caller chooses the key explicitly and the tests run without a .env file.
+import { WooError } from './errors.js';
 import type { WooKeyPair } from './keys.js';
 import { signOAuth1 } from './oauth.js';
 
@@ -110,6 +111,27 @@ export async function storeRequest(
     // Error answers can contain server paths and stack traces: only a 2xx body is passed on.
     data: status >= 200 && status < 300 ? parsed : null,
   };
+}
+
+/**
+ * For reads: turns an answer into its data, or throws a WooError the read tools understand.
+ * Only a 200 counts as success (a WooCommerce GET answers 200); a redirect is not followed,
+ * so a 3xx is UNAVAILABLE. The caller still validates the shape of the data.
+ */
+export function readDataOrThrow(answer: StoreAnswer | null): unknown {
+  if (answer === null) {
+    throw new WooError('UNAVAILABLE', 'Store did not respond');
+  }
+  if (answer.status === 404) {
+    throw new WooError('NOT_FOUND', 'Resource not found', 404);
+  }
+  if (answer.status === 401 || answer.status === 403) {
+    throw new WooError('AUTH', 'Store rejected our credentials', answer.status);
+  }
+  if (answer.status !== 200) {
+    throw new WooError('UNAVAILABLE', `Store returned HTTP ${answer.status}`, answer.status);
+  }
+  return answer.data;
 }
 
 function readSafeCode(parsed: unknown): string | null {

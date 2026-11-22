@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { storeRequest, type FetchLike, type StoreRequest } from '../src/woo/request.js';
+import { WooError } from '../src/woo/errors.js';
+import { readDataOrThrow, storeRequest, type FetchLike, type StoreRequest } from '../src/woo/request.js';
 
 // Fake credentials used only in tests.
 const KEYS = { key: 'ck_test_key', secret: 'cs_test_secret' };
@@ -203,5 +204,54 @@ describe('storeRequest: refuses invalid arguments before sending anything', () =
     const fake = fakeFetch(() => json(200, {}));
     const error = await storeRequest(req({ path: '/bad path' }), fake.fetch).catch((e: unknown) => e);
     expect(String(error)).not.toContain(KEYS.secret);
+  });
+});
+
+describe('readDataOrThrow: what a read makes of an answer', () => {
+  function thrown(fn: () => unknown): WooError | null {
+    try {
+      fn();
+      return null;
+    } catch (error) {
+      return error instanceof WooError ? error : null;
+    }
+  }
+
+  it('returns the data of a 200 answer', () => {
+    expect(readDataOrThrow({ status: 200, code: null, data: { id: 20 } })).toEqual({ id: 20 });
+  });
+
+  it('returns data null for a 200 with an unreadable body (the caller validates the shape)', () => {
+    expect(readDataOrThrow({ status: 200, code: null, data: null })).toBeNull();
+  });
+
+  it.each([
+    ['no answer', null, 'UNAVAILABLE', undefined],
+    ['404', { status: 404, code: 'woocommerce_rest_shop_order_invalid_id', data: null }, 'NOT_FOUND', 404],
+    ['404 rest_no_route', { status: 404, code: 'rest_no_route', data: null }, 'NOT_FOUND', 404],
+    ['401', { status: 401, code: 'woocommerce_rest_authentication_error', data: null }, 'AUTH', 401],
+    ['403', { status: 403, code: null, data: null }, 'AUTH', 403],
+    ['500', { status: 500, code: 'internal_server_error', data: null }, 'UNAVAILABLE', 500],
+    ['502', { status: 502, code: null, data: null }, 'UNAVAILABLE', 502],
+    ['a redirect (not followed)', { status: 301, code: null, data: null }, 'UNAVAILABLE', 301],
+    ['a 2xx other than 200', { status: 204, code: null, data: null }, 'UNAVAILABLE', 204],
+    ['400', { status: 400, code: 'rest_invalid_param', data: null }, 'UNAVAILABLE', 400],
+  ] as const)('throws for %s', (_label, answer, kind, status) => {
+    const error = thrown(() => readDataOrThrow(answer));
+    expect(error?.kind).toBe(kind);
+    expect(error?.status).toBe(status);
+  });
+
+  it('works together with storeRequest: a redirect is not followed and becomes UNAVAILABLE', async () => {
+    const fake = fakeFetch(() => new Response(null, { status: 302, headers: { Location: 'http://evil.example.com/' } }));
+    const answer = await storeRequest(req(), fake.fetch);
+    expect(thrown(() => readDataOrThrow(answer))?.kind).toBe('UNAVAILABLE');
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('never passes on the text of an error answer', async () => {
+    const fake = fakeFetch(() => json(500, { code: 'internal_server_error', message: 'Fatal error in /var/www/shop.php' }));
+    const answer = await storeRequest(req(), fake.fetch);
+    expect(thrown(() => readDataOrThrow(answer))?.message).toBe('Store returned HTTP 500');
   });
 });

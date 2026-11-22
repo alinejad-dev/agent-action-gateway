@@ -17,7 +17,7 @@ import type {
 import { WooError } from './errors.js';
 import type { WooKeyPair } from './keys.js';
 import { formatCents, parseMoneyToCents, refundTotalToCents } from './money.js';
-import { storeRequest, type FetchLike, type StoreAnswer } from './request.js';
+import { readDataOrThrow, storeRequest, type FetchLike, type StoreAnswer } from './request.js';
 
 export type WooAdapterOptions = {
   baseUrl: string;
@@ -115,19 +115,7 @@ export function createWooAdapter(options: WooAdapterOptions): StoreAdapter {
         { baseUrl, keys: readKeys, method: 'GET', path: `/orders/${orderId}` },
         fetchImpl,
       );
-      if (answer === null) {
-        throw new WooError('UNAVAILABLE', 'Store did not respond');
-      }
-      if (answer.status === 404) {
-        throw new WooError('NOT_FOUND', 'Resource not found', 404);
-      }
-      if (answer.status === 401 || answer.status === 403) {
-        throw new WooError('AUTH', 'Store rejected our credentials', answer.status);
-      }
-      if (answer.status !== 200) {
-        throw new WooError('UNAVAILABLE', `Store returned HTTP ${answer.status}`, answer.status);
-      }
-      const parsed = WooSnapshotSchema.safeParse(answer.data);
+      const parsed = WooSnapshotSchema.safeParse(readDataOrThrow(answer));
       if (!parsed.success || String(parsed.data.id) !== orderId) {
         throw new WooError('BAD_RESPONSE', 'Unexpected order shape from store');
       }
