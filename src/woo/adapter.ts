@@ -3,9 +3,11 @@
 // so the tests run without a .env file.
 import * as z from 'zod/v4';
 import type {
+  ActionRejection,
+  CancelRequest,
+  CancelResult,
   OrderSnapshot,
   OrderStatus,
-  RefundRejection,
   RefundRequest,
   RefundResult,
   StoreAdapter,
@@ -25,7 +27,7 @@ export type WooAdapterOptions = {
   fetchImpl?: FetchLike;
 };
 
-/** Meta key on every refund we create, so a refund can be found again by its request id. */
+/** Meta key on every refund we create and every order we cancel, holding our request id. */
 export const REQUEST_ID_META_KEY = 'gateway_request_id';
 
 const ORDER_ID = /^[1-9][0-9]{0,11}$/;
@@ -48,6 +50,7 @@ const WooSnapshotSchema = z.object({
 type WooSnapshotData = z.infer<typeof WooSnapshotSchema>;
 
 const WooRefundSchema = z.object({ id: z.number().int().positive(), amount: z.string() });
+const WooCancelSchema = z.object({ id: z.number().int(), status: z.string() });
 
 // A Map, not an object: a status like "constructor" must not find Object.prototype members.
 const STATUS: ReadonlyMap<string, OrderStatus> = new Map([
@@ -62,14 +65,20 @@ const STATUS: ReadonlyMap<string, OrderStatus> = new Map([
 
 // Answers to a refund request that, measured on WooCommerce 11.1.2, created nothing.
 // Every other answer is 'unknown': when in doubt we never assume that nothing happened.
-const REFUND_REJECTIONS: ReadonlyMap<string, RefundRejection> = new Map([
+const REFUND_REJECTIONS: ReadonlyMap<string, ActionRejection> = new Map([
   ['500 woocommerce_rest_invalid_order_id', 'ORDER_NOT_FOUND'],
   ['500 woocommerce_rest_cannot_create_order_refund', 'STORE_REFUSED'], // amount too high or gateway problem
   ['500 woocommerce_rest_invalid_order_refund', 'INVALID_REQUEST'],
   ['400 rest_invalid_param', 'INVALID_REQUEST'],
 ]);
 
-const UNKNOWN: RefundResult = { outcome: 'unknown' };
+// The same for a cancel (PUT /orders/<id>), measured on WooCommerce 11.1.2.
+const CANCEL_REJECTIONS: ReadonlyMap<string, ActionRejection> = new Map([
+  ['400 woocommerce_rest_shop_order_invalid_id', 'ORDER_NOT_FOUND'],
+  ['400 rest_invalid_param', 'INVALID_REQUEST'],
+]);
+
+const UNKNOWN = { outcome: 'unknown' } as const;
 
 export function createWooAdapter(options: WooAdapterOptions): StoreAdapter {
   if (!META_KEY.test(options.deliveredMetaKey)) {
@@ -117,9 +126,7 @@ export function createWooAdapter(options: WooAdapterOptions): StoreAdapter {
       if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
         throw new Error('WooCommerce adapter: the refund amount must be a whole, positive number of cents');
       }
-      if (!UUID.test(requestId)) {
-        throw new Error('WooCommerce adapter: the request id must be a lowercase UUID');
-      }
+      assertRequestId(requestId);
       if (writeKeys === null) {
         return { outcome: 'rejected', reason: 'WRITE_KEY_MISSING' }; // fail closed, nothing sent
       }
@@ -144,7 +151,38 @@ export function createWooAdapter(options: WooAdapterOptions): StoreAdapter {
       );
       return readRefundAnswer(answer);
     },
+
+    // Side effects of a cancel in WooCommerce (measured): stock goes back up and the shop is
+    // emailed. WooCommerce accepts it from ANY status, even completed or refunded.
+    async cancelOrder({ orderId, requestId }: CancelRequest): Promise<CancelResult> {
+      assertRequestId(requestId);
+      if (writeKeys === null) {
+        return { outcome: 'rejected', reason: 'WRITE_KEY_MISSING' }; // fail closed, nothing sent
+      }
+      if (!ORDER_ID.test(orderId)) {
+        return { outcome: 'rejected', reason: 'ORDER_NOT_FOUND' };
+      }
+      // WooCommerce has no cancel endpoint: a cancel is a status change. Status and meta are
+      // saved in one request.
+      const answer = await storeRequest(
+        {
+          baseUrl,
+          keys: writeKeys,
+          method: 'PUT',
+          path: `/orders/${orderId}`,
+          body: { status: 'cancelled', meta_data: [{ key: REQUEST_ID_META_KEY, value: requestId }] },
+        },
+        fetchImpl,
+      );
+      return readCancelAnswer(answer, orderId);
+    },
   };
+}
+
+function assertRequestId(requestId: string): void {
+  if (!UUID.test(requestId)) {
+    throw new Error('WooCommerce adapter: the request id must be a lowercase UUID');
+  }
 }
 
 function readRefundAnswer(answer: StoreAnswer | null): RefundResult {
@@ -165,6 +203,25 @@ function readRefundAnswer(answer: StoreAnswer | null): RefundResult {
     return { outcome: 'rejected', reason: 'AUTH' };
   }
   const reason = REFUND_REJECTIONS.get(`${answer.status} ${answer.code}`);
+  return reason === undefined ? UNKNOWN : { outcome: 'rejected', reason };
+}
+
+function readCancelAnswer(answer: StoreAnswer | null, orderId: string): CancelResult {
+  if (answer === null) {
+    return UNKNOWN; // no answer: the order may have been cancelled
+  }
+  if (answer.status === 200) {
+    const parsed = WooCancelSchema.safeParse(answer.data);
+    // A 200 alone is not enough: a plugin can keep the old status. Only the saved status counts.
+    const cancelled =
+      parsed.success && String(parsed.data.id) === orderId && parsed.data.status === 'cancelled';
+    return cancelled ? { outcome: 'cancelled' } : UNKNOWN; // our meta may have been saved anyway
+  }
+  if (answer.status === 401 || answer.status === 403) {
+    // The key is checked before the route runs, so nothing changed.
+    return { outcome: 'rejected', reason: 'AUTH' };
+  }
+  const reason = CANCEL_REJECTIONS.get(`${answer.status} ${answer.code}`);
   return reason === undefined ? UNKNOWN : { outcome: 'rejected', reason };
 }
 

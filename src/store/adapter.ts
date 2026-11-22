@@ -1,6 +1,6 @@
 // The platform-neutral view of a store that the policy and the action tools use.
 // WooCommerce implements it now; a Shopify adapter (Phase 2.5) will return the same shapes.
-// Methods are added only when they are implemented (cancel comes in step 2d).
+// Methods are added only when they are implemented.
 
 /** Order statuses the gateway understands. Anything else is 'other', which the policy never allows. */
 export type OrderStatus =
@@ -32,8 +32,8 @@ export type RefundRequest = {
   requestId: string; // action_requests.id (UUID), stored on the refund so it can be found again
 };
 
-/** Why the store refused. Only used when we know for certain that nothing was created. */
-export type RefundRejection =
+/** Why the store refused an action. Only used when we know for certain that nothing changed. */
+export type ActionRejection =
   | 'WRITE_KEY_MISSING'
   | 'AUTH'
   | 'ORDER_NOT_FOUND'
@@ -42,8 +42,19 @@ export type RefundRejection =
 
 export type RefundResult =
   | { outcome: 'created'; storeRefundId: string; amountCents: number }
-  | { outcome: 'rejected'; reason: RefundRejection }
+  | { outcome: 'rejected'; reason: ActionRejection }
   // The refund may or may not exist. Never retry: find it by the request id instead.
+  | { outcome: 'unknown' };
+
+export type CancelRequest = {
+  orderId: string;
+  requestId: string; // action_requests.id (UUID), stored on the order
+};
+
+export type CancelResult =
+  | { outcome: 'cancelled' }
+  | { outcome: 'rejected'; reason: ActionRejection }
+  // The order may or may not have changed. Never retry blindly: read the order again instead.
   | { outcome: 'unknown' };
 
 export interface StoreAdapter {
@@ -52,4 +63,9 @@ export interface StoreAdapter {
   getOrder(orderId: string): Promise<OrderSnapshot>;
   /** Records a refund in the store. Never throws for a store answer: see RefundResult. */
   createRefund(request: RefundRequest): Promise<RefundResult>;
+  /**
+   * Sets the order to cancelled. Never throws for a store answer: see CancelResult.
+   * It does not check the current status: which statuses may be cancelled is the policy's decision.
+   */
+  cancelOrder(request: CancelRequest): Promise<CancelResult>;
 }

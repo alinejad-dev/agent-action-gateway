@@ -269,6 +269,83 @@ describe('WooCommerce adapter: createRefund', () => {
   );
 });
 
+describe('WooCommerce adapter: cancelOrder', () => {
+  const cancel = { orderId: '20', requestId: REQUEST_ID };
+  // Shape of a 200 answer recorded from WooCommerce 11.1.2 (fields shortened).
+  const cancelledOrder = wooOrder({ status: 'cancelled' });
+
+  it('sets the status with a PUT and the write key, and stores the request id on the order', async () => {
+    const { adapter, urls, bodies } = adapterAnswering({ status: 200, body: cancelledOrder });
+    expect(await adapter.cancelOrder(cancel)).toEqual({ outcome: 'cancelled' });
+    expect(urls[0]?.pathname).toBe('/wp-json/wc/v3/orders/20');
+    expect(urls[0]?.searchParams.get('oauth_consumer_key')).toBe(WRITE_KEYS.key);
+    expect(bodies[0]).toEqual({
+      status: 'cancelled',
+      meta_data: [{ key: 'gateway_request_id', value: REQUEST_ID }],
+    });
+  });
+
+  it('sends the PUT method', async () => {
+    const methods: (string | undefined)[] = [];
+    const fetchImpl: FetchLike = async (_url, init) => {
+      methods.push(init.method);
+      return new Response(JSON.stringify(cancelledOrder), { status: 200 });
+    };
+    const { adapter } = adapterAnswering({ status: 200, body: {} }, { fetchImpl });
+    await adapter.cancelOrder(cancel);
+    expect(methods).toEqual(['PUT']);
+  });
+
+  it.each([
+    ['a 200 that kept another status (a plugin)', { status: 200, body: wooOrder({ status: 'processing' }) }],
+    ['a 200 for another order', { status: 200, body: wooOrder({ id: 21, status: 'cancelled' }) }],
+    ['a 200 without a readable body', { status: 200, body: 'ok' }],
+    ['a PHP fatal error', { status: 500, body: { code: 'internal_server_error' } }],
+    ['an unknown error code', { status: 400, body: { code: 'some_plugin_error' } }],
+    ['a gateway error page', { status: 502, body: 'Bad Gateway' }],
+    ['a redirect', { status: 301, body: null }],
+  ])('returns unknown for %s', async (_label, answer) => {
+    const { adapter } = adapterAnswering(answer);
+    expect(await adapter.cancelOrder(cancel)).toEqual({ outcome: 'unknown' });
+  });
+
+  it('returns unknown when no answer arrives (the order may have changed)', async () => {
+    const { adapter } = adapterAnswering('network-error');
+    expect(await adapter.cancelOrder(cancel)).toEqual({ outcome: 'unknown' });
+  });
+
+  it.each([
+    [401, 'woocommerce_rest_authentication_error', 'AUTH'],
+    [403, 'woocommerce_rest_cannot_edit', 'AUTH'],
+    [400, 'woocommerce_rest_shop_order_invalid_id', 'ORDER_NOT_FOUND'],
+    [400, 'rest_invalid_param', 'INVALID_REQUEST'],
+  ])('maps a measured refusal (HTTP %i %s) to rejected %s', async (status, code, reason) => {
+    const { adapter } = adapterAnswering({ status, body: { code, message: 'x', data: { status } } });
+    expect(await adapter.cancelOrder(cancel)).toEqual({ outcome: 'rejected', reason });
+  });
+
+  it('refuses without asking the store when no write key is configured', async () => {
+    const { adapter, urls } = adapterAnswering({ status: 200, body: cancelledOrder }, { writeKeys: null });
+    expect(await adapter.cancelOrder(cancel)).toEqual({ outcome: 'rejected', reason: 'WRITE_KEY_MISSING' });
+    expect(urls).toHaveLength(0);
+  });
+
+  it('refuses an order id that cannot exist without asking the store', async () => {
+    const { adapter, urls } = adapterAnswering({ status: 200, body: cancelledOrder });
+    expect(await adapter.cancelOrder({ ...cancel, orderId: 'abc' })).toEqual({
+      outcome: 'rejected',
+      reason: 'ORDER_NOT_FOUND',
+    });
+    expect(urls).toHaveLength(0);
+  });
+
+  it('throws for an invalid request id before sending anything', async () => {
+    const { adapter, urls } = adapterAnswering({ status: 200, body: cancelledOrder });
+    await expect(adapter.cancelOrder({ ...cancel, requestId: 'not-a-uuid' })).rejects.toThrow('request id');
+    expect(urls).toHaveLength(0);
+  });
+});
+
 describe('readCalendarDate', () => {
   const meta = (...entries: [string, unknown][]) => entries.map(([key, value]) => ({ key, value }));
 
