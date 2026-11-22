@@ -1,5 +1,6 @@
 import * as z from 'zod/v4';
 import { wooGet, WooError } from './client.js';
+import { formatCents, refundTotalToCents } from './money.js';
 
 // Only the fields we need. Zod drops everything else —
 // including emails, phone numbers and addresses — so they never reach the model.
@@ -33,14 +34,24 @@ export type OrderSummary = {
 
 const MAX_SEARCH_RESULTS = 10;
 
-/** Converts "-18.00" or "18.00" to 1800 cents — avoids floating-point money bugs. */
-function toCents(amount: string): number {
-  return Math.round(Math.abs(Number(amount)) * 100);
+/**
+ * Sum of all refunds in cents (integers, no floating-point money bugs).
+ * An amount we cannot read is an error, not a guess: the refunded total must be exact.
+ */
+function refundedCents(order: WooOrder): number {
+  let sum = 0;
+  for (const refund of order.refunds) {
+    const cents = refundTotalToCents(refund.total);
+    if (cents === null) {
+      throw new WooError('BAD_RESPONSE', 'Unexpected refund amount from store');
+    }
+    sum += cents;
+  }
+  return sum;
 }
 
 /** The single place that decides what order data the model is allowed to see. */
 function summarize(order: WooOrder): OrderSummary {
-  const refundedCents = order.refunds.reduce((sum, refund) => sum + toCents(refund.total), 0);
   return {
     id: order.id,
     number: order.number,
@@ -54,7 +65,7 @@ function summarize(order: WooOrder): OrderSummary {
       quantity: item.quantity,
       total: item.total,
     })),
-    refundedTotal: (refundedCents / 100).toFixed(2),
+    refundedTotal: formatCents(refundedCents(order)),
   };
 }
 
