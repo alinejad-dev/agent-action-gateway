@@ -1,6 +1,6 @@
 // The platform-neutral view of a store that the policy and the action tools use.
 // WooCommerce implements it now; a Shopify adapter (Phase 2.5) will return the same shapes.
-// Methods are added only when they are implemented (refund in step 2c, cancel in 2d).
+// Methods are added only when they are implemented (cancel comes in step 2d).
 
 /** Order statuses the gateway understands. Anything else is 'other', which the policy never allows. */
 export type OrderStatus =
@@ -26,8 +26,30 @@ export type OrderSnapshot = {
   deliveredOn: string | null;
 };
 
+export type RefundRequest = {
+  orderId: string;
+  amountCents: number; // whole, positive number of cents
+  requestId: string; // action_requests.id (UUID), stored on the refund so it can be found again
+};
+
+/** Why the store refused. Only used when we know for certain that nothing was created. */
+export type RefundRejection =
+  | 'WRITE_KEY_MISSING'
+  | 'AUTH'
+  | 'ORDER_NOT_FOUND'
+  | 'STORE_REFUSED'
+  | 'INVALID_REQUEST';
+
+export type RefundResult =
+  | { outcome: 'created'; storeRefundId: string; amountCents: number }
+  | { outcome: 'rejected'; reason: RefundRejection }
+  // The refund may or may not exist. Never retry: find it by the request id instead.
+  | { outcome: 'unknown' };
+
 export interface StoreAdapter {
   readonly platform: 'woocommerce';
   /** Reads one order fresh from the store (never from a cache). */
   getOrder(orderId: string): Promise<OrderSnapshot>;
+  /** Records a refund in the store. Never throws for a store answer: see RefundResult. */
+  createRefund(request: RefundRequest): Promise<RefundResult>;
 }
