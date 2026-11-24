@@ -151,6 +151,7 @@ describe('poolOptions', () => {
       connectionTimeoutMillis: 10_000,
       idleTimeoutMillis: 30_000,
       statement_timeout: 10_000,
+      allowExitOnIdle: true,
     });
   });
 });

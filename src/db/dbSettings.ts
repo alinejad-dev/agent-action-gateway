@@ -5,7 +5,7 @@
 //   all required set and valid, CA readable -> ok, settings
 //   anything else                           -> not ok, with one line per problem
 // Scripts stop on anything but valid settings (dbConfig.ts). The server can run read-only
-// without a database, but refuses to start on a broken configuration (wired in P2-4e).
+// without a database, but refuses to start on a broken configuration (src/runtime.ts).
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,6 +107,9 @@ export function poolOptions(settings: DbSettings): PoolConfig {
     connectionTimeoutMillis: 10_000, // same 10s budget as the WooCommerce client
     idleTimeoutMillis: 30_000,
     statement_timeout: 10_000, // no query may hang forever
+    // Idle connections do not keep the process alive. Measured: a stdio server whose client closed
+    // stdin exited after 30 s without this, at once with it. Scripts still call pool.end() themselves.
+    allowExitOnIdle: true,
   };
 }
 

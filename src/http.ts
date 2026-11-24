@@ -5,15 +5,29 @@ import {
   localhostOriginValidation,
   toNodeHandler,
 } from '@modelcontextprotocol/node';
+import { config, wooWriteKeys } from './config.js';
 import { httpConfig } from './http/httpConfig.js';
 import { createBearerCheck } from './http/auth.js';
+import { startRuntime } from './runtime.js';
 import { createServer } from './server.js';
 
 // Host names clients may use to reach this server (DNS-rebinding protection).
 // host.docker.internal = n8n running inside Docker on the same machine.
 const ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]', 'host.docker.internal'];
 
-const handler = createMcpHandler(createServer); // fresh McpServer per request (stateless)
+// Built once per process: policy, store adapter, database pool. Exits on a broken configuration.
+const runtime = startRuntime(
+  {
+    baseUrl: config.WOO_BASE_URL,
+    readKeys: { key: config.WOO_CONSUMER_KEY, secret: config.WOO_CONSUMER_SECRET },
+    writeKeys: wooWriteKeys,
+    env: process.env,
+  },
+  'http',
+);
+
+// Fresh McpServer per request (stateless); the refund tool's dependencies are shared.
+const handler = createMcpHandler(() => createServer(runtime.refundTool));
 const nodeHandler = toNodeHandler(handler);
 const validateHost = hostHeaderValidation(ALLOWED_HOSTS);
 const validateOrigin = localhostOriginValidation(); // requests without Origin (n8n) pass
@@ -80,6 +94,7 @@ async function shutdown(): Promise<void> {
   console.error('Shutting down...');
   httpServer.close();
   await handler.close();
+  await runtime.close(); // database pool
   process.exit(0);
 }
 process.on('SIGINT', () => void shutdown());
