@@ -1,6 +1,12 @@
 import { WooError } from '../woo/errors.js';
 
-export type ErrorCode = 'INVALID_INPUT' | 'ORDER_NOT_FOUND' | 'STORE_UNAVAILABLE' | 'INTERNAL_ERROR';
+export type ErrorCode =
+  | 'INVALID_INPUT'
+  | 'ORDER_NOT_FOUND'
+  | 'STORE_UNAVAILABLE'
+  | 'INTERNAL_ERROR'
+  | 'IDEMPOTENCY_KEY_REUSED' // request_refund: the key was already used with other values
+  | 'REFUND_PENDING'; // request_refund: another request for this order is still open
 
 type ToolResult = {
   content: { type: 'text'; text: string }[];
