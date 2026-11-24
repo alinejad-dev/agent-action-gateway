@@ -19,6 +19,7 @@ function validFile(): Record<string, any> {
       allowPartialRefunds: true,
     },
     store: {
+      storeId: 'lumio-demo',
       deliveredMetaKey: 'lumio_delivered_date',
       apiRefund: false,
       apiRestock: false,
@@ -47,8 +48,9 @@ describe('the committed config/policy.json', () => {
       refundableStatuses: ['completed'],
       allowPartialRefunds: true,
     });
-    expect(policy.refund.policyVersion).toMatch(/^2026-11-24\.1\+[0-9a-f]{12}$/);
+    expect(policy.refund.policyVersion).toMatch(/^2026-11-24\.2\+[0-9a-f]{12}$/);
     expect(policy.store).toEqual({
+      storeId: 'lumio-demo',
       deliveredMetaKey: 'lumio_delivered_date',
       apiRefund: false,
       apiRestock: false,
@@ -114,6 +116,12 @@ describe('parsePolicyFile', () => {
     expect(policy.refund.allowPartialRefunds).toBe(false);
   });
 
+  it.each(['lumio-demo', 'shop_2', 'a', 'a'.repeat(64)])('accepts the store id %j', (storeId) => {
+    const file = validFile();
+    file.store.storeId = storeId;
+    expect(parsePolicyFile(JSON.stringify(file)).store.storeId).toBe(storeId);
+  });
+
   it('refuses text that is not JSON', () => {
     expect(problemsOf('{ "policyVersion": ')).toEqual(['the file is not valid JSON']);
   });
@@ -153,6 +161,13 @@ describe('parsePolicyFile', () => {
     ['WooCommerce spelling "on-hold"', (f) => { f.refund.refundableStatuses = ['on-hold']; }, 'refund.refundableStatuses.0'],
     ['status listed twice', (f) => { f.refund.refundableStatuses = ['completed', 'completed']; }, 'refund.refundableStatuses'],
     ['partial flag as a string', (f) => { f.refund.allowPartialRefunds = 'yes'; }, 'refund.allowPartialRefunds'],
+    ['missing storeId', (f) => { delete f.store.storeId; }, 'store.storeId'],
+    ['empty storeId', (f) => { f.store.storeId = ''; }, 'store.storeId'],
+    ['storeId with uppercase', (f) => { f.store.storeId = 'Lumio-demo'; }, 'store.storeId'],
+    ['storeId with a space', (f) => { f.store.storeId = 'lumio demo'; }, 'store.storeId'],
+    ['storeId with a dot', (f) => { f.store.storeId = 'lumio.demo'; }, 'store.storeId'],
+    ['storeId longer than 64', (f) => { f.store.storeId = 'a'.repeat(65); }, 'store.storeId'],
+    ['storeId as a number', (f) => { f.store.storeId = 1; }, 'store.storeId'],
     ['meta key with a space', (f) => { f.store.deliveredMetaKey = 'delivered date'; }, 'store.deliveredMetaKey'],
     ['empty meta key', (f) => { f.store.deliveredMetaKey = ''; }, 'store.deliveredMetaKey'],
     ['apiRefund as a string', (f) => { f.store.apiRefund = 'false'; }, 'store.apiRefund'],

@@ -46,6 +46,9 @@ const RefundRulesSchema = z.strictObject({
 });
 
 const StoreSettingsSchema = z.strictObject({
+  // Which store this server acts on. Saved as store_id in every database row, so it uses the same
+  // pattern as the database CHECK in migrations/001_init.sql.
+  storeId: z.string().regex(/^[a-z0-9_-]{1,64}$/, 'lowercase letters, digits, "_" or "-" (1-64)'),
   deliveredMetaKey: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'letters, digits, "_" or "-" (1-64)'),
   apiRefund: z.boolean(),
   apiRestock: z.boolean(),

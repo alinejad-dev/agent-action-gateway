@@ -1,5 +1,5 @@
 {
-  "policyVersion": "2026-11-24.1",
+  "policyVersion": "2026-11-24.2",
   "refund": {
     "currency": "USD",
     "autoApproveMaxCents": 2500,
@@ -9,6 +9,7 @@
     "allowPartialRefunds": true
   },
   "store": {
+    "storeId": "lumio-demo",
     "deliveredMetaKey": "lumio_delivered_date",
     "apiRefund": false,
     "apiRestock": false
