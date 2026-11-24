@@ -1,0 +1,16 @@
+{
+  "policyVersion": "2026-11-24.1",
+  "refund": {
+    "currency": "USD",
+    "autoApproveMaxCents": 2500,
+    "returnWindowDays": 30,
+    "timeZone": "UTC",
+    "refundableStatuses": ["completed"],
+    "allowPartialRefunds": true
+  },
+  "store": {
+    "deliveredMetaKey": "lumio_delivered_date",
+    "apiRefund": false,
+    "apiRestock": false
+  }
+}
