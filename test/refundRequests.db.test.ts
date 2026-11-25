@@ -12,7 +12,10 @@ import { refundRequestHash } from '../src/actions/refundInput.js';
 import { rowAfterDecision, rowAfterExecution, rowAfterReadError } from '../src/actions/refundAnswer.js';
 import { createPool, resolveDbSettings } from '../src/db/dbSettings.js';
 import {
+  CANCEL_PENDING_ACTOR,
+  cancelPendingRefund,
   claimRefund,
+  listPendingRefunds,
   readByKey,
   recordReplay,
   recordStep,
@@ -391,6 +394,104 @@ describe.skipIf(!ENABLED)('refund requests on a real Postgres (GATEWAY_DB_TEST=1
   it('race: two keys for one order at once -> one claimed, one pending', async () => {
     const results = await Promise.all([claimRefund(pool, claimFor('1019')), claimRefund(pool, claimFor('1019'))]);
     expect(results.map((r) => r.outcome).sort()).toEqual(['claimed', 'pending']);
+  });
+
+  async function decide(rowId: string, decision: typeof AUTO | typeof NEEDS | typeof REJECT) {
+    return recordStep(pool, {
+      id: rowId,
+      expectedStatus: 'in_progress',
+      change: rowAfterDecision(decision),
+      audit: DECISION_AUDIT,
+    });
+  }
+
+  it('cancel-pending: pending -> cancelled + audit entry; order free again; replay answers cancelled', async () => {
+    const claim = claimFor('1030', 8900);
+    const first = await claimRefund(pool, claim);
+    if (first.outcome !== 'claimed') throw new Error('expected claimed');
+    await decide(first.row.id, NEEDS);
+    const result = await cancelPendingRefund(pool, { id: first.row.id, storeId });
+    expect(result).toEqual({
+      outcome: 'cancelled',
+      row: {
+        ...first.row,
+        status: 'cancelled',
+        decision: 'NEEDS_APPROVAL',
+        reasonCode: 'ABOVE_AUTO_LIMIT',
+      },
+    });
+    const audit = await auditRows(first.row.id);
+    const columns = audit.map((a) => [a.event_type, a.outcome, a.actor, a.decision, a.reason_code, a.policy_version]);
+    expect(columns).toEqual([
+      ['decision', null, 'stdio', 'NEEDS_APPROVAL', 'ABOVE_AUTO_LIMIT', VERSION],
+      ['decision', 'cancelled', CANCEL_PENDING_ACTOR, 'NEEDS_APPROVAL', 'ABOVE_AUTO_LIMIT', VERSION],
+    ]);
+    expect(audit[1].detail).toEqual({ step: 'cancel-pending' });
+    const again = await claimRefund(pool, claim);
+    expect(again.outcome).toBe('replay');
+    if (again.outcome !== 'replay') return;
+    expect(again.row.status).toBe('cancelled');
+    expect((await claimRefund(pool, claimFor('1030', 8900))).outcome).toBe('claimed');
+  });
+
+  it('cancel-pending changes nothing: another store, a second cancel, a request that is not pending', async () => {
+    const pending = await claimNew('1031', 8900);
+    await decide(pending.id, NEEDS);
+    expect(await cancelPendingRefund(pool, { id: pending.id, storeId: `${storeId}-x` })).toEqual({
+      outcome: 'not_pending',
+    });
+    expect((await readByKey(pool, storeId, `itest-key-${counter}`))?.status).toBe('pending_approval');
+    expect((await cancelPendingRefund(pool, { id: pending.id, storeId })).outcome).toBe('cancelled');
+    expect(await cancelPendingRefund(pool, { id: pending.id, storeId })).toEqual({ outcome: 'not_pending' });
+    expect(await auditRows(pending.id)).toHaveLength(2);
+
+    const running = await claimNew('1032');
+    expect(await cancelPendingRefund(pool, { id: running.id, storeId })).toEqual({ outcome: 'not_pending' });
+    const rejected = await claimNew('1033');
+    await decide(rejected.id, REJECT);
+    expect(await cancelPendingRefund(pool, { id: rejected.id, storeId })).toEqual({ outcome: 'not_pending' });
+    const statuses = await pool.query(
+      'select status from gateway.action_requests where id = any($1::uuid[]) order by order_id',
+      [[running.id, rejected.id]],
+    );
+    expect(statuses.rows).toEqual([{ status: 'in_progress' }, { status: 'rejected' }]);
+    expect(await auditRows(running.id)).toEqual([]);
+    expect(await auditRows(rejected.id)).toHaveLength(1);
+  });
+
+  it("listPendingRefunds: only this store's pending refund requests, oldest first", async () => {
+    const listStore = `${storeId}-list`;
+    async function claimIn(orderId: string, amountCents: number) {
+      counter += 1;
+      const result = await claimRefund(pool, {
+        storeId: listStore,
+        orderId,
+        amountCents,
+        currency: 'USD',
+        idempotencyKey: `itest-key-${counter}`,
+        requestHash: refundRequestHash(listStore, { orderId, amountCents, currency: 'USD' }),
+        actor: 'stdio',
+      });
+      if (result.outcome !== 'claimed') throw new Error('expected claimed');
+      return result.row;
+    }
+    expect(await listPendingRefunds(pool, listStore)).toEqual([]);
+    const a = await claimIn('2001', 8900);
+    await decide(a.id, NEEDS);
+    const b = await claimIn('2002', 3500);
+    await decide(b.id, NEEDS);
+    await claimIn('2003', 1800); // in_progress
+    const c = await claimIn('2004', 1800);
+    await decide(c.id, REJECT);
+
+    const listed = await listPendingRefunds(pool, listStore);
+    expect(listed.map((p) => [p.id, p.orderId, p.amountCents, p.currency])).toEqual([
+      [a.id, '2001', 8900, 'USD'],
+      [b.id, '2002', 3500, 'USD'],
+    ]);
+    expect(listed.every((p) => p.createdAt instanceof Date)).toBe(true);
+    await cancelPendingRefund(pool, { id: a.id, storeId: listStore });
+    expect((await listPendingRefunds(pool, listStore)).map((p) => p.orderId)).toEqual(['2002']);
   });
 
   it('leaves no connection checked out', () => {

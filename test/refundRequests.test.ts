@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CANCEL_PENDING_ACTOR,
+  cancelPendingRefund,
   claimRefund,
   classifyUniqueViolation,
+  listPendingRefunds,
   readByKey,
   recordReplay,
   recordStep,
@@ -416,6 +419,128 @@ describe('recordReplay', () => {
     await expect(recordReplay(fake.db, STORED, 'stdio')).rejects.toThrow(
       'insertAudit: expected to insert 1 row, inserted 0',
     );
+  });
+});
+
+const CREATED_AT = new Date('2026-11-25T08:00:00.000Z');
+
+function pendingDbRow(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { id: ID, order_id: '22', amount_cents: 8900, currency: 'USD', created_at: CREATED_AT, ...extra };
+}
+
+describe('listPendingRefunds', () => {
+  it("reads this store's pending refund requests, oldest first, without a transaction", async () => {
+    const other = '2c5f39cb-3fb2-42e3-994e-1127e4ddb538';
+    const second = pendingDbRow({ id: other, order_id: '25', amount_cents: 3500 });
+    const fake = fakeDb([{ rows: [pendingDbRow(), second] }]);
+    const pending = await listPendingRefunds(fake.db, 'lumio-demo');
+    expect(pending).toEqual([
+      { id: ID, orderId: '22', amountCents: 8900, currency: 'USD', createdAt: CREATED_AT },
+      { id: other, orderId: '25', amountCents: 3500, currency: 'USD', createdAt: CREATED_AT },
+    ]);
+    expect(pending.every((p) => Object.isFrozen(p))).toBe(true);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.via).toBe('pool');
+    expect(fake.calls[0]?.sql).toBe(
+      'select id, order_id, amount_cents, currency, created_at from gateway.action_requests\n' +
+        "  where store_id = $1 and action = 'refund' and status = 'pending_approval'\n" +
+        '  order by created_at, id',
+    );
+    expect(fake.calls[0]?.params).toEqual(['lumio-demo']);
+    expect(fake.connects()).toBe(0);
+  });
+
+  it('returns an empty list when nothing is pending', async () => {
+    const fake = fakeDb([{ rows: [] }]);
+    await expect(listPendingRefunds(fake.db, 'lumio-demo')).resolves.toEqual([]);
+  });
+
+  it.each([
+    ['id', 42],
+    ['order_id', 22],
+    ['amount_cents', '8900'],
+    ['amount_cents', 0],
+    ['amount_cents', 1.5],
+    ['currency', null],
+    ['created_at', '2026-11-25T08:00:00.000Z'],
+    ['created_at', new Date('not a date')],
+  ])('refuses column %s = %s, naming the column but not the value', async (column, value) => {
+    const fake = fakeDb([{ rows: [pendingDbRow({ [column]: value })] }]);
+    await expect(listPendingRefunds(fake.db, 'lumio-demo')).rejects.toThrow(
+      new Error(`listPendingRefunds: unexpected value in column ${column}`),
+    );
+  });
+});
+
+const CANCELLED_ROW = dbRow({
+  status: 'cancelled',
+  decision: 'NEEDS_APPROVAL',
+  reason_code: 'ABOVE_AUTO_LIMIT',
+  amount_cents: 8900,
+});
+
+describe('cancelPendingRefund', () => {
+  it('changes only the status and writes a decision audit entry in one transaction', async () => {
+    const fake = fakeDb([{}, { rows: [CANCELLED_ROW], rowCount: 1 }, { rowCount: 1 }, {}]);
+    await expect(cancelPendingRefund(fake.db, { id: ID, storeId: 'lumio-demo' })).resolves.toEqual({
+      outcome: 'cancelled',
+      row: {
+        ...STORED,
+        status: 'cancelled',
+        decision: 'NEEDS_APPROVAL',
+        reasonCode: 'ABOVE_AUTO_LIMIT',
+        amountCents: 8900,
+      },
+    });
+    expect(fake.calls.map((c) => c.sql.split(/\s/)[0])).toEqual(['BEGIN', 'update', 'insert', 'COMMIT']);
+    expect(fake.calls.every((c) => c.via === 'client')).toBe(true);
+    expect(fake.calls[1]?.sql).toBe(
+      'update gateway.action_requests\n' +
+        "  set status = 'cancelled'\n" +
+        "  where id = $1 and store_id = $2 and action = 'refund' and status = 'pending_approval'\n" +
+        '  returning id, action, status, decision, reason_code, amount_cents, currency, store_refund_id',
+    );
+    expect(fake.calls[1]?.params).toEqual([ID, 'lumio-demo']);
+    expect(fake.calls[2]?.sql).toMatch(/^insert into gateway\.audit_log/);
+    expect(fake.calls[2]?.params).toEqual([
+      ID,
+      'decision',
+      'request_refund',
+      'cancelled',
+      'script:cancel-pending',
+      '{"step":"cancel-pending"}',
+    ]);
+    expect(fake.connects()).toBe(1);
+    expect(fake.releases).toEqual([undefined]);
+  });
+
+  it('no longer pending (or another store) -> not_pending, no audit entry', async () => {
+    const fake = fakeDb([{}, { rows: [], rowCount: 0 }, {}]);
+    await expect(cancelPendingRefund(fake.db, { id: ID, storeId: 'lumio-demo' })).resolves.toEqual({
+      outcome: 'not_pending',
+    });
+    expect(fake.calls.map((c) => c.sql.split(/\s/)[0])).toEqual(['BEGIN', 'update', 'COMMIT']);
+    expect(fake.releases).toEqual([undefined]);
+  });
+
+  it('audit entry not written -> rollback, throws', async () => {
+    const fake = fakeDb([{}, { rows: [CANCELLED_ROW], rowCount: 1 }, { rowCount: 0 }, {}]);
+    await expect(cancelPendingRefund(fake.db, { id: ID, storeId: 'lumio-demo' })).rejects.toThrow(
+      'insertAudit: expected to insert 1 row, inserted 0',
+    );
+    expect(fake.calls.map((c) => c.sql.split(/\s/)[0])).toEqual(['BEGIN', 'update', 'insert', 'ROLLBACK']);
+  });
+
+  it('a database error is rethrown after a rollback', async () => {
+    const error = pgError('23514', undefined);
+    const fake = fakeDb([{}, error, {}]);
+    await expect(cancelPendingRefund(fake.db, { id: ID, storeId: 'lumio-demo' })).rejects.toBe(error);
+    expect(fake.calls.map((c) => c.sql.split(/\s/)[0])).toEqual(['BEGIN', 'update', 'ROLLBACK']);
+    expect(fake.releases).toEqual([undefined]);
+  });
+
+  it('the actor of a script cancel is fixed', () => {
+    expect(CANCEL_PENDING_ACTOR).toBe('script:cancel-pending');
   });
 });
 

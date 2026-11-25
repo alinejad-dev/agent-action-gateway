@@ -46,8 +46,8 @@ const STATUSES: readonly RequestStatus[] = [
 ];
 const DECISIONS: readonly Decision[] = ['AUTO_APPROVE', 'NEEDS_APPROVAL', 'REJECT'];
 
-function badColumn(column: string): never {
-  throw new Error(`rowFromDb: unexpected value in column ${column}`);
+function badColumn(column: string, where = 'rowFromDb'): never {
+  throw new Error(`${where}: unexpected value in column ${column}`);
 }
 
 /** A row of gateway.action_requests -> StoredRefundRequest. Anything unexpected is a bug: throw. */
@@ -268,4 +268,72 @@ async function insertAudit(
   if (result.rowCount !== 1) {
     throw new Error(`insertAudit: expected to insert 1 row, inserted ${result.rowCount}`);
   }
+}
+
+// ---- Cancelling requests that wait for a person (npm run requests:cancel-pending) ----
+// Until Phase 3 (Slack approval) nothing else can finish a pending_approval request, and each one
+// locks its order. A pending request never reached the store, so cancelling it only changes the row.
+
+/** The audit actor of a cancel made by the cancel-pending script. */
+export const CANCEL_PENDING_ACTOR = 'script:cancel-pending';
+
+/** One request waiting for approval, as the script lists it. No customer data. */
+export type PendingRefund = Readonly<{
+  id: string;
+  orderId: string;
+  amountCents: number;
+  currency: string;
+  createdAt: Date;
+}>;
+
+const SELECT_PENDING = `select id, order_id, amount_cents, currency, created_at from gateway.action_requests
+  where store_id = $1 and action = 'refund' and status = 'pending_approval'
+  order by created_at, id`;
+
+// Only the status changes: decision, reason_code and policy_version keep what the policy decided.
+// The trigger allows pending_approval -> cancelled; "status = 'pending_approval'" catches a change in between.
+const CANCEL_PENDING = `update gateway.action_requests
+  set status = 'cancelled'
+  where id = $1 and store_id = $2 and action = 'refund' and status = 'pending_approval'
+  returning ${ROW_COLUMNS}`;
+
+function pendingFromDb(record: Readonly<Record<string, unknown>>): PendingRefund {
+  const WHERE = 'listPendingRefunds';
+  const { id, order_id, amount_cents, currency, created_at } = record;
+  if (typeof id !== 'string') badColumn('id', WHERE);
+  if (typeof order_id !== 'string') badColumn('order_id', WHERE);
+  if (typeof amount_cents !== 'number' || !Number.isSafeInteger(amount_cents) || amount_cents <= 0) {
+    badColumn('amount_cents', WHERE);
+  }
+  if (typeof currency !== 'string') badColumn('currency', WHERE);
+  if (!(created_at instanceof Date) || Number.isNaN(created_at.getTime())) badColumn('created_at', WHERE);
+  return Object.freeze({ id, orderId: order_id, amountCents: amount_cents, currency, createdAt: created_at });
+}
+
+/** This store's refund requests in status pending_approval, oldest first. */
+export async function listPendingRefunds(db: RequestsDb, storeId: string): Promise<PendingRefund[]> {
+  const result = await db.query(SELECT_PENDING, [storeId]);
+  return result.rows.map((record) => pendingFromDb(record));
+}
+
+export type CancelPendingResult =
+  | { outcome: 'cancelled'; row: StoredRefundRequest }
+  | { outcome: 'not_pending' }; // no longer pending (or not this store's): nothing changed
+
+/** Cancels one pending_approval request + its audit entry in ONE transaction: both are saved or neither. */
+export async function cancelPendingRefund(
+  db: RequestsDb,
+  request: Readonly<{ id: string; storeId: string }>,
+): Promise<CancelPendingResult> {
+  return inTransaction(db, async (client) => {
+    const updated = await client.query(CANCEL_PENDING, [request.id, request.storeId]);
+    if (updated.rowCount === 0) {
+      return { outcome: 'not_pending' };
+    }
+    const row = rowFromDb(singleRow(updated.rows, 'cancelPendingRefund'));
+    await insertAudit(client, request.id, 'decision', 'cancelled', CANCEL_PENDING_ACTOR, {
+      step: 'cancel-pending',
+    });
+    return { outcome: 'cancelled', row };
+  });
 }

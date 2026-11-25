@@ -21,6 +21,7 @@
     "app-password:status": "tsx src/scripts/set-app-password.ts status",
     "app-password:rotate": "tsx src/scripts/set-app-password.ts rotate",
     "db:selftest": "tsx src/scripts/selftest-db.ts",
+    "requests:cancel-pending": "tsx src/scripts/cancel-pending.ts",
     "woo-write-key:status": "tsx src/scripts/set-woo-write-key.ts status",
     "woo-write-key:set": "tsx src/scripts/set-woo-write-key.ts set",
     "woo:selftest": "tsx src/scripts/selftest-woo.ts"
